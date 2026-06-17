@@ -24,10 +24,11 @@ jobs:
     name: live 18-prompt probe (self-hosted Spark)
     needs: judge-logic
     # The real probe needs Ollama + the fine-tuned cerebro-* models, which only
-    # exist on the GB10 box — GitHub-hosted runners can't run them. Register a
-    # self-hosted runner on the Spark (labels: self-hosted, spark) and flip the
-    # `if:` below to true (or trigger via workflow_dispatch) to enable it.
-    if: false
+    # exist on the GB10 box — GitHub-hosted runners can't run them. Runs on the
+    # self-hosted Spark runner (labels: self-hosted, spark).
+    # SECURITY: public repo + self-hosted runner — restrict to push/manual only,
+    # NEVER pull_request, so a fork's PR can't execute code on the Spark.
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: [self-hosted, spark]
     steps:
       - uses: actions/checkout@v4
