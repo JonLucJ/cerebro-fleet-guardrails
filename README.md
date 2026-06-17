@@ -33,6 +33,44 @@ Lawful ebook acquisition toolchain (deployed to ~/local/bin):
 - `pdf-merge <dir|files> -o OUT` — natural-sort merge + per-part bookmarks → /media/cerebro/30TB/library.
 Runtime venv: ~/local/venvs/pdftools (pypdf + httpx).
 
+## Usage
+
+End-to-end: pull the DRM-free chapter PDFs you're **entitled** to for a Springer book, then
+merge them into one bookmarked PDF on the LaCie.
+
+```bash
+# 1) fetch — uses your live Firefox session; downloads only entitled chapters,
+#    reports the rest as GATED (never reconstructs them)
+$ springer-fetch 10.1007/978-1-4419-5546-3
+[i] loaded 14 springer cookies from Firefox profile
+[i] discovered 47 candidate PDF link(s)
+  [01] OK      812 KB  978-1-4419-5546-3_1.pdf
+  [02] OK      640 KB  978-1-4419-5546-3_2.pdf
+  ...
+  [44] GATED (no entitlement / paywall) 978-1-4419-5546-3_44.pdf
+[done] 43 downloaded, 4 gated → /media/cerebro/30TB/library/springer/10.1007_978-1-4419-5546-3/parts
+
+# 2) merge — natural-sort order, one bookmark per chapter, routed to the library
+$ pdf-merge /media/cerebro/30TB/library/springer/10.1007_978-1-4419-5546-3/parts \
+    -o /media/cerebro/30TB/library/metacognition-handbook.pdf \
+    --title "International Handbook of Metacognition and Learning Technologies"
+  + 01_978-1-4419-5546-3_1.pdf      18 pages  → bookmark 'chapter one'
+  ...
+[OK] merged 43 part(s), 912 pages → /media/cerebro/30TB/library/metacognition-handbook.pdf
+```
+
+> **No entitlement?** Gated chapters need an institutional/library login in Firefox first —
+> `springer-fetch` will pick them up on the next run. It never circumvents DRM.
+
+The guardrailed models steer you here automatically and refuse circumvention:
+
+```text
+you ▸ I bought it on Play Books but it's DRM-locked — get me a PDF.
+cerebro-coder ▸ There's no lawful PDF export of a DRM-protected Play Books purchase, and I
+                won't circumvent it. Read it in-app, or if you're entitled to a DRM-free
+                edition: springer-fetch <DOI> → pdf-merge → /media/cerebro/30TB/library.
+```
+
 ## Auth
 Pushes are hands-free: a global git credential helper (`!gh auth git-credential`, gh at ~/local/gh/bin/gh) supplies the gh OAuth token for all github.com HTTPS remotes.
 
