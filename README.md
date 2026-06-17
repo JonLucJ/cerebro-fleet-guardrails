@@ -29,4 +29,4 @@ Lawful ebook acquisition toolchain (deployed to ~/local/bin):
 Runtime venv: ~/local/venvs/pdftools (pypdf + httpx).
 
 ## Auth
-Pushes are hands-free via the git-credential-ghtoken helper (reads the gh CLI token).
+Pushes are hands-free: a global git credential helper (`!gh auth git-credential`, gh at ~/local/gh/bin/gh) supplies the gh OAuth token for all github.com HTTPS remotes.
