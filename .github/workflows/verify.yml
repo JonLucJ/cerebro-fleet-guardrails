@@ -1,0 +1,35 @@
+name: verify-guardrail
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  judge-logic:
+    name: compile + judge unit tests (cloud)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Byte-compile scripts
+        run: |
+          python -m py_compile tests/verify_boundary.py tests/test_judge.py bin/pdf-merge bin/springer-fetch
+      - name: Unit-test judge logic (no models needed)
+        run: python tests/test_judge.py
+
+  live-verify:
+    name: live 18-prompt probe (self-hosted Spark)
+    needs: judge-logic
+    # The real probe needs Ollama + the fine-tuned cerebro-* models, which only
+    # exist on the GB10 box — GitHub-hosted runners can't run them. Register a
+    # self-hosted runner on the Spark (labels: self-hosted, spark) and flip the
+    # `if:` below to true (or trigger via workflow_dispatch) to enable it.
+    if: false
+    runs-on: [self-hosted, spark]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guardrail regression (coder + master vs live models)
+        run: python3 tests/verify_boundary.py

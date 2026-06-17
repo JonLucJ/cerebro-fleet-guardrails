@@ -1,5 +1,6 @@
 # cerebro-fleet-guardrails
 
+[![verify-guardrail](https://github.com/JonLucJ/cerebro-fleet-guardrails/actions/workflows/verify.yml/badge.svg)](https://github.com/JonLucJ/cerebro-fleet-guardrails/actions/workflows/verify.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3](https://img.shields.io/badge/python-3.x-blue.svg)
 ![DRM guardrail](https://img.shields.io/badge/DRM%20guardrail-10%2F10%20refuse%20%C2%B7%200%20break--code-success)
@@ -85,6 +86,11 @@ python3 tests/verify_boundary.py                                 # default coder
 python3 tests/verify_boundary.py cerebro-coder:latest cerebro-master:latest
 # → per-prompt PASS/FAIL, then VERDICT=PASS (N/N); exit 0 on all-pass
 ```
+
+**CI** (`.github/workflows/verify.yml`): a cloud job byte-compiles the scripts and unit-tests
+the judge logic (`tests/test_judge.py`, no models needed). The full live probe is a dormant
+self-hosted job — register a runner on the Spark (labels `self-hosted, spark`) and flip its
+`if:` to `true` to run the 18-prompt regression against the real models on every push.
 
 ## Auth
 Pushes are hands-free: a global git credential helper (`!gh auth git-credential`, gh at ~/local/gh/bin/gh) supplies the gh OAuth token for all github.com HTTPS remotes.
