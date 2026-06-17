@@ -1,5 +1,10 @@
 # cerebro-fleet-guardrails
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python 3](https://img.shields.io/badge/python-3.x-blue.svg)
+![DRM guardrail](https://img.shields.io/badge/DRM%20guardrail-10%2F10%20refuse%20%C2%B7%200%20break--code-success)
+![Platform](https://img.shields.io/badge/platform-DGX%20Spark%20%C2%B7%20GB10-76B900)
+
 Operational artifacts for the cerebro-* local model fleet (NVIDIA DGX Spark / GB10).
 
 ## Principle
@@ -30,3 +35,6 @@ Runtime venv: ~/local/venvs/pdftools (pypdf + httpx).
 
 ## Auth
 Pushes are hands-free: a global git credential helper (`!gh auth git-credential`, gh at ~/local/gh/bin/gh) supplies the gh OAuth token for all github.com HTTPS remotes.
+
+## License
+[MIT](LICENSE) © 2026 Jonathan Justinien
