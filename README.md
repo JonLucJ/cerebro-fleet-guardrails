@@ -27,3 +27,6 @@ Lawful ebook acquisition toolchain (deployed to ~/local/bin):
   via the live Firefox session; reports gated chapters, never reconstructs them.
 - `pdf-merge <dir|files> -o OUT` — natural-sort merge + per-part bookmarks → /media/cerebro/30TB/library.
 Runtime venv: ~/local/venvs/pdftools (pypdf + httpx).
+
+## Auth
+Pushes are hands-free via the git-credential-ghtoken helper (reads the gh CLI token).
