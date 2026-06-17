@@ -1,0 +1,152 @@
+#!/home/cerebro/local/venvs/pdftools/bin/python
+"""springer-fetch — download the DRM-free chapter PDFs of a SpringerLink book
+you are ENTITLED to, using your live Firefox session cookies.
+
+This does NOT bypass access control: it reuses the cookies of a browser where
+you're already logged in (institutional / personal entitlement). Chapters you
+don't have rights to come back as HTML paywalls and are reported as 'gated',
+never reconstructed. For legitimately accessible chapters Springer serves a
+clean, DRM-free PDF — exactly what we save.
+
+Usage:
+  springer-fetch <DOI-or-book-URL> [-o OUTDIR] [--profile PATH]
+  springer-fetch 10.1007/978-1-4419-5546-3
+Then assemble with:  pdf-merge <OUTDIR> -o /media/cerebro/30TB/library/<name>.pdf
+"""
+import argparse, re, shutil, sqlite3, sys, tempfile, time
+from pathlib import Path
+import httpx
+
+UA = ("Mozilla/5.0 (X11; Ubuntu; Linux aarch64; rv:130.0) "
+      "Gecko/20100101 Firefox/130.0")
+BASE = "https://link.springer.com"
+FF_PROFILE = Path.home() / "snap/firefox/common/.mozilla/firefox/27bajdm1.default"
+
+
+def load_cookies(profile: Path, domain_like="springer") -> dict:
+    db = profile / "cookies.sqlite"
+    if not db.exists():
+        print(f"[!] no cookie db at {db}", file=sys.stderr)
+        return {}
+    # Copy out (the live db is locked/WAL while Firefox runs).
+    tmp = Path(tempfile.mkdtemp()) / "cookies.sqlite"
+    shutil.copy2(db, tmp)
+    for ext in ("-wal", "-shm"):
+        p = db.with_name(db.name + ext)
+        if p.exists():
+            shutil.copy2(p, tmp.with_name(tmp.name + ext))
+    jar = {}
+    try:
+        con = sqlite3.connect(f"file:{tmp}?immutable=1", uri=True)
+        for name, value, host in con.execute(
+            "SELECT name,value,host FROM moz_cookies WHERE host LIKE ?",
+            (f"%{domain_like}%",)):
+            jar[name] = value
+        con.close()
+    except Exception as e:
+        print(f"[!] cookie read failed: {e}", file=sys.stderr)
+    print(f"[i] loaded {len(jar)} springer cookies from Firefox profile")
+    return jar
+
+
+def doi_from(arg: str) -> str:
+    m = re.search(r"(10\.\d{4,9}/[^\s?#]+)", arg)
+    if not m:
+        sys.exit(f"could not find a DOI in: {arg}")
+    return m.group(1).rstrip("/")
+
+
+def is_pdf(resp) -> bool:
+    ct = resp.headers.get("content-type", "")
+    return "application/pdf" in ct or resp.content[:5] == b"%PDF-"
+
+
+def fetch_book_html(client, doi) -> str:
+    html = ""
+    for page in range(1, 12):  # follow chapter pagination
+        url = f"{BASE}/book/{doi}" + (f"?page={page}" if page > 1 else "")
+        r = client.get(url)
+        if r.status_code != 200:
+            break
+        html += r.text
+        if f"page={page+1}" not in r.text and page > 1:
+            break
+    return html
+
+
+def discover_pdf_urls(html: str, doi: str) -> list[str]:
+    urls = []
+    # direct /content/pdf/...pdf links on the page
+    for m in re.findall(r'/content/pdf/[^"\'\s]+\.pdf', html):
+        urls.append(BASE + m)
+    # chapter anchors -> construct content-pdf url
+    for n in re.findall(rf'/chapter/{re.escape(doi)}_(\d+)', html):
+        urls.append(f"{BASE}/content/pdf/{doi}_{n}.pdf")
+    # de-dup, keep order
+    seen, out = set(), []
+    for u in urls:
+        if u not in seen:
+            seen.add(u); out.append(u)
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("target", help="DOI or SpringerLink book URL")
+    ap.add_argument("-o", "--out")
+    ap.add_argument("--profile", default=str(FF_PROFILE))
+    args = ap.parse_args()
+
+    doi = doi_from(args.target)
+    safe = doi.replace("/", "_")
+    outdir = Path(args.out or f"/media/cerebro/30TB/library/springer/{safe}/parts")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    cookies = load_cookies(Path(args.profile))
+    client = httpx.Client(headers={"User-Agent": UA, "Referer": f"{BASE}/book/{doi}"},
+                          cookies=cookies, follow_redirects=True, timeout=60)
+
+    # 1) whole-book PDF if entitled
+    whole = f"{BASE}/content/pdf/{doi}.pdf"
+    r = client.get(whole)
+    if r.status_code == 200 and is_pdf(r):
+        p = outdir / f"00_{safe}_FULL.pdf"
+        p.write_bytes(r.content)
+        print(f"[OK] whole-book PDF available → {p} ({len(r.content)//1024} KB)")
+        print("     (no need to merge — this is the complete book)")
+        return
+
+    # 2) per-chapter
+    html = fetch_book_html(client, doi)
+    pdf_urls = discover_pdf_urls(html, doi)
+    if not pdf_urls:
+        sys.exit("[!] found no chapter PDF links — page may need login, or the "
+                 "DOI is wrong. Open the book in Firefox & sign in first.")
+    print(f"[i] discovered {len(pdf_urls)} candidate PDF link(s)")
+
+    got = gated = 0
+    for i, url in enumerate(pdf_urls, 1):
+        try:
+            r = client.get(url)
+        except Exception as e:
+            print(f"  [{i:02d}] ERROR {url}: {e}"); continue
+        if r.status_code == 200 and is_pdf(r):
+            name = url.rsplit("/", 1)[-1].replace("%2F", "_")
+            p = outdir / f"{i:02d}_{name}"
+            p.write_bytes(r.content)
+            got += 1
+            print(f"  [{i:02d}] OK   {len(r.content)//1024:>6} KB  {p.name}")
+        else:
+            gated += 1
+            print(f"  [{i:02d}] GATED (no entitlement / paywall) {url.rsplit('/',1)[-1]}")
+        time.sleep(0.4)  # be polite
+
+    print(f"\n[done] {got} downloaded, {gated} gated → {outdir}")
+    if got:
+        print(f"next: pdf-merge {outdir} -o /media/cerebro/30TB/library/{safe}.pdf")
+    if gated:
+        print("[note] gated chapters need institutional/library login in Firefox first.")
+
+
+if __name__ == "__main__":
+    main()

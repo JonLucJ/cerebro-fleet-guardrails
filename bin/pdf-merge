@@ -1,0 +1,78 @@
+#!/home/cerebro/local/venvs/pdftools/bin/python
+"""pdf-merge — stitch PDFs into one bookmarked file, routed to the LaCie.
+
+Merges either a directory of PDFs (natural sort) or an explicit file list,
+adds one outline bookmark per source part (named from the filename), and
+writes the result under /media/cerebro/30TB/library/ by default.
+
+Usage:
+  pdf-merge <DIR>                 -o /media/cerebro/30TB/library/book.pdf
+  pdf-merge a.pdf b.pdf c.pdf     -o out.pdf --title "My Book"
+"""
+import argparse, re, sys
+from pathlib import Path
+from pypdf import PdfReader, PdfWriter
+
+DEFAULT_DIR = Path("/media/cerebro/30TB/library")
+
+
+def natkey(p: Path):
+    return [int(t) if t.isdigit() else t.lower()
+            for t in re.split(r"(\d+)", p.name)]
+
+
+def label(p: Path) -> str:
+    s = re.sub(r"^\d+[_\-]?", "", p.stem)          # drop ordering prefix
+    s = s.replace("%2F", "_").replace("_", " ").strip()
+    s = re.sub(r"\.pdf$", "", s, flags=re.I)
+    return s or p.stem
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("inputs", nargs="+", help="a directory of PDFs, or PDF files")
+    ap.add_argument("-o", "--out", required=True)
+    ap.add_argument("--title", help="document title metadata")
+    args = ap.parse_args()
+
+    files: list[Path] = []
+    for i in args.inputs:
+        p = Path(i)
+        if p.is_dir():
+            files += sorted(p.glob("*.pdf"), key=natkey)
+        elif p.suffix.lower() == ".pdf":
+            files.append(p)
+    if not files:
+        sys.exit("no PDF inputs found")
+
+    out = Path(args.out)
+    if not out.is_absolute() and out.parent == Path("."):
+        out = DEFAULT_DIR / out.name
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    writer = PdfWriter()
+    page_cursor = 0
+    added = 0
+    for f in files:
+        try:
+            reader = PdfReader(str(f))
+        except Exception as e:
+            print(f"  [skip] {f.name}: {e}"); continue
+        n = len(reader.pages)
+        for pg in reader.pages:
+            writer.add_page(pg)
+        writer.add_outline_item(label(f), page_cursor)
+        page_cursor += n
+        added += 1
+        print(f"  + {f.name:<48} {n:>4} pages  → bookmark '{label(f)}'")
+
+    if args.title:
+        writer.add_metadata({"/Title": args.title})
+    with open(out, "wb") as fh:
+        writer.write(fh)
+    print(f"\n[OK] merged {added} part(s), {page_cursor} pages → {out} "
+          f"({out.stat().st_size//1024} KB)")
+
+
+if __name__ == "__main__":
+    main()
