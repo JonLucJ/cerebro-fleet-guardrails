@@ -9,41 +9,52 @@ never reconstructed. For legitimately accessible chapters Springer serves a
 clean, DRM-free PDF — exactly what we save.
 
 Usage:
-  springer-fetch <DOI-or-book-URL> [-o OUTDIR] [--profile PATH]
+  springer-fetch <DOI-or-book-URL> [-o OUTDIR] [--profile PATH] [--list]
   springer-fetch 10.1007/978-1-4419-5546-3
+  springer-fetch 10.1007/978-1-4419-5546-3 --list      # discover only, download nothing
 Then assemble with:  pdf-merge <OUTDIR> -o /media/cerebro/30TB/library/<name>.pdf
+
+Exit: 0 if something downloaded (or --list found links); 3 if all gated; 4 if no links.
 """
-import argparse, re, shutil, sqlite3, sys, tempfile, time
+from __future__ import annotations
+import argparse
+import re
+import shutil
+import sqlite3
+import sys
+import tempfile
+import time
 from pathlib import Path
+
 import httpx
 
 UA = ("Mozilla/5.0 (X11; Ubuntu; Linux aarch64; rv:130.0) "
       "Gecko/20100101 Firefox/130.0")
 BASE = "https://link.springer.com"
 FF_PROFILE = Path.home() / "snap/firefox/common/.mozilla/firefox/27bajdm1.default"
+MAX_RETRIES = 3
 
 
-def load_cookies(profile: Path, domain_like="springer") -> dict:
+def load_cookies(profile: Path, domain_like: str = "springer") -> dict:
     db = profile / "cookies.sqlite"
     if not db.exists():
         print(f"[!] no cookie db at {db}", file=sys.stderr)
         return {}
-    # Copy out (the live db is locked/WAL while Firefox runs).
-    tmp = Path(tempfile.mkdtemp()) / "cookies.sqlite"
+    tmp = Path(tempfile.mkdtemp()) / "cookies.sqlite"   # copy out (live db is WAL-locked)
     shutil.copy2(db, tmp)
     for ext in ("-wal", "-shm"):
         p = db.with_name(db.name + ext)
         if p.exists():
             shutil.copy2(p, tmp.with_name(tmp.name + ext))
-    jar = {}
+    jar: dict[str, str] = {}
     try:
         con = sqlite3.connect(f"file:{tmp}?immutable=1", uri=True)
-        for name, value, host in con.execute(
-            "SELECT name,value,host FROM moz_cookies WHERE host LIKE ?",
-            (f"%{domain_like}%",)):
+        for name, value, _host in con.execute(
+                "SELECT name,value,host FROM moz_cookies WHERE host LIKE ?",
+                (f"%{domain_like}%",)):
             jar[name] = value
         con.close()
-    except Exception as e:
+    except sqlite3.Error as e:
         print(f"[!] cookie read failed: {e}", file=sys.stderr)
     print(f"[i] loaded {len(jar)} springer cookies from Firefox profile")
     return jar
@@ -56,97 +67,114 @@ def doi_from(arg: str) -> str:
     return m.group(1).rstrip("/")
 
 
-def is_pdf(resp) -> bool:
+def is_pdf(resp: httpx.Response) -> bool:
     ct = resp.headers.get("content-type", "")
     return "application/pdf" in ct or resp.content[:5] == b"%PDF-"
 
 
-def fetch_book_html(client, doi) -> str:
+def get(client: httpx.Client, url: str) -> httpx.Response | None:
+    """GET with bounded exponential backoff on transient (network/5xx) errors."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            r = client.get(url)
+            if r.status_code >= 500 and attempt < MAX_RETRIES:
+                raise httpx.HTTPError(f"{r.status_code}")
+            return r
+        except httpx.HTTPError as e:
+            if attempt == MAX_RETRIES:
+                print(f"    [warn] giving up on {url}: {e}", file=sys.stderr)
+                return None
+            time.sleep(0.5 * 2 ** (attempt - 1))   # 0.5s, 1s
+    return None
+
+
+def fetch_book_html(client: httpx.Client, doi: str) -> str:
     html = ""
-    for page in range(1, 12):  # follow chapter pagination
+    for page in range(1, 12):                      # follow chapter pagination
         url = f"{BASE}/book/{doi}" + (f"?page={page}" if page > 1 else "")
-        r = client.get(url)
-        if r.status_code != 200:
+        r = get(client, url)
+        if r is None or r.status_code != 200:
             break
         html += r.text
-        if f"page={page+1}" not in r.text and page > 1:
+        if f"page={page + 1}" not in r.text and page > 1:
             break
     return html
 
 
 def discover_pdf_urls(html: str, doi: str) -> list[str]:
-    urls = []
-    # direct /content/pdf/...pdf links on the page
-    for m in re.findall(r'/content/pdf/[^"\'\s]+\.pdf', html):
-        urls.append(BASE + m)
-    # chapter anchors -> construct content-pdf url
-    for n in re.findall(rf'/chapter/{re.escape(doi)}_(\d+)', html):
-        urls.append(f"{BASE}/content/pdf/{doi}_{n}.pdf")
-    # de-dup, keep order
-    seen, out = set(), []
+    urls = [BASE + m for m in re.findall(r'/content/pdf/[^"\'\s]+\.pdf', html)]
+    urls += [f"{BASE}/content/pdf/{doi}_{n}.pdf"
+             for n in re.findall(rf'/chapter/{re.escape(doi)}_(\d+)', html)]
+    seen: set[str] = set()
+    out: list[str] = []
     for u in urls:
         if u not in seen:
-            seen.add(u); out.append(u)
+            seen.add(u)
+            out.append(u)
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Fetch entitled DRM-free SpringerLink chapter PDFs.")
     ap.add_argument("target", help="DOI or SpringerLink book URL")
-    ap.add_argument("-o", "--out")
-    ap.add_argument("--profile", default=str(FF_PROFILE))
+    ap.add_argument("-o", "--out", help="output dir (default: LaCie library/springer/<doi>/parts)")
+    ap.add_argument("--profile", default=str(FF_PROFILE), help="Firefox profile dir")
+    ap.add_argument("--list", action="store_true", help="discover PDF links only; download nothing")
     args = ap.parse_args()
 
     doi = doi_from(args.target)
     safe = doi.replace("/", "_")
     outdir = Path(args.out or f"/media/cerebro/30TB/library/springer/{safe}/parts")
-    outdir.mkdir(parents=True, exist_ok=True)
 
     cookies = load_cookies(Path(args.profile))
     client = httpx.Client(headers={"User-Agent": UA, "Referer": f"{BASE}/book/{doi}"},
                           cookies=cookies, follow_redirects=True, timeout=60)
+    try:
+        if not args.list:
+            outdir.mkdir(parents=True, exist_ok=True)
+            whole = get(client, f"{BASE}/content/pdf/{doi}.pdf")
+            if whole is not None and whole.status_code == 200 and is_pdf(whole):
+                p = outdir / f"00_{safe}_FULL.pdf"
+                p.write_bytes(whole.content)
+                print(f"[OK] whole-book PDF available → {p} ({len(whole.content)//1024} KB)")
+                print("     (no need to merge — this is the complete book)")
+                return 0
 
-    # 1) whole-book PDF if entitled
-    whole = f"{BASE}/content/pdf/{doi}.pdf"
-    r = client.get(whole)
-    if r.status_code == 200 and is_pdf(r):
-        p = outdir / f"00_{safe}_FULL.pdf"
-        p.write_bytes(r.content)
-        print(f"[OK] whole-book PDF available → {p} ({len(r.content)//1024} KB)")
-        print("     (no need to merge — this is the complete book)")
-        return
+        html = fetch_book_html(client, doi)
+        pdf_urls = discover_pdf_urls(html, doi)
+        if not pdf_urls:
+            print("[!] found no chapter PDF links — page may need login, or the DOI is wrong. "
+                  "Open the book in Firefox & sign in first.", file=sys.stderr)
+            return 4
+        print(f"[i] discovered {len(pdf_urls)} candidate PDF link(s)")
 
-    # 2) per-chapter
-    html = fetch_book_html(client, doi)
-    pdf_urls = discover_pdf_urls(html, doi)
-    if not pdf_urls:
-        sys.exit("[!] found no chapter PDF links — page may need login, or the "
-                 "DOI is wrong. Open the book in Firefox & sign in first.")
-    print(f"[i] discovered {len(pdf_urls)} candidate PDF link(s)")
+        if args.list:
+            for i, url in enumerate(pdf_urls, 1):
+                print(f"  [{i:02d}] {url}")
+            return 0
 
-    got = gated = 0
-    for i, url in enumerate(pdf_urls, 1):
-        try:
-            r = client.get(url)
-        except Exception as e:
-            print(f"  [{i:02d}] ERROR {url}: {e}"); continue
-        if r.status_code == 200 and is_pdf(r):
-            name = url.rsplit("/", 1)[-1].replace("%2F", "_")
-            p = outdir / f"{i:02d}_{name}"
-            p.write_bytes(r.content)
-            got += 1
-            print(f"  [{i:02d}] OK   {len(r.content)//1024:>6} KB  {p.name}")
-        else:
-            gated += 1
-            print(f"  [{i:02d}] GATED (no entitlement / paywall) {url.rsplit('/',1)[-1]}")
-        time.sleep(0.4)  # be polite
+        got = gated = 0
+        for i, url in enumerate(pdf_urls, 1):
+            r = get(client, url)
+            if r is not None and r.status_code == 200 and is_pdf(r):
+                name = url.rsplit("/", 1)[-1].replace("%2F", "_")
+                (outdir / f"{i:02d}_{name}").write_bytes(r.content)
+                got += 1
+                print(f"  [{i:02d}] OK   {len(r.content)//1024:>6} KB  {i:02d}_{name}")
+            else:
+                gated += 1
+                print(f"  [{i:02d}] GATED (no entitlement / paywall) {url.rsplit('/',1)[-1]}")
+            time.sleep(0.4)                        # be polite to the server
 
-    print(f"\n[done] {got} downloaded, {gated} gated → {outdir}")
-    if got:
-        print(f"next: pdf-merge {outdir} -o /media/cerebro/30TB/library/{safe}.pdf")
-    if gated:
-        print("[note] gated chapters need institutional/library login in Firefox first.")
+        print(f"\n[done] {got} downloaded, {gated} gated → {outdir}")
+        if got:
+            print(f"next: pdf-merge {outdir} -o /media/cerebro/30TB/library/{safe}.pdf")
+        if gated:
+            print("[note] gated chapters need institutional/library login in Firefox first.")
+        return 0 if got else 3
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

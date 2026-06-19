@@ -1,49 +1,77 @@
 #!/home/cerebro/local/venvs/pdftools/bin/python
 """pdf-merge — stitch PDFs into one bookmarked file, routed to the LaCie.
 
-Merges either a directory of PDFs (natural sort) or an explicit file list,
-adds one outline bookmark per source part (named from the filename), and
-writes the result under /media/cerebro/30TB/library/ by default.
+Merges either a directory of PDFs (natural sort) or an explicit file list, adds
+one outline bookmark per source part, and writes under /media/cerebro/30TB/library/
+by default. Encrypted-but-openable PDFs (empty owner password) are merged; truly
+locked or corrupt inputs are skipped with a warning rather than aborting the run.
+The output is written atomically (never a half-written target).
 
 Usage:
   pdf-merge <DIR>                 -o /media/cerebro/30TB/library/book.pdf
   pdf-merge a.pdf b.pdf c.pdf     -o out.pdf --title "My Book"
+Exit: 0 if at least one part merged; 2 if no usable input.
 """
-import argparse, re, sys
+from __future__ import annotations
+import argparse
+import re
+import sys
 from pathlib import Path
+
 from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PdfReadError
 
 DEFAULT_DIR = Path("/media/cerebro/30TB/library")
 
 
-def natkey(p: Path):
-    return [int(t) if t.isdigit() else t.lower()
-            for t in re.split(r"(\d+)", p.name)]
+def natkey(p: Path) -> list:
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", p.name)]
 
 
 def label(p: Path) -> str:
-    s = re.sub(r"^\d+[_\-]?", "", p.stem)          # drop ordering prefix
+    s = re.sub(r"^\d+[_\-]?", "", p.stem)        # drop ordering prefix
     s = s.replace("%2F", "_").replace("_", " ").strip()
-    s = re.sub(r"\.pdf$", "", s, flags=re.I)
     return s or p.stem
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("inputs", nargs="+", help="a directory of PDFs, or PDF files")
-    ap.add_argument("-o", "--out", required=True)
-    ap.add_argument("--title", help="document title metadata")
-    args = ap.parse_args()
+def open_reader(f: Path) -> PdfReader | None:
+    """Return a readable PdfReader, decrypting with an empty password if needed."""
+    try:
+        reader = PdfReader(str(f))
+        if reader.is_encrypted and reader.decrypt("") == 0:
+            print(f"  [skip] {f.name}: encrypted (needs a password)")
+            return None
+        _ = len(reader.pages)                    # surface lazy parse errors now
+        return reader
+    except (PdfReadError, OSError, ValueError) as e:
+        print(f"  [skip] {f.name}: unreadable ({e})")
+        return None
 
+
+def collect(inputs: list[str]) -> list[Path]:
     files: list[Path] = []
-    for i in args.inputs:
+    for i in inputs:
         p = Path(i)
         if p.is_dir():
             files += sorted(p.glob("*.pdf"), key=natkey)
-        elif p.suffix.lower() == ".pdf":
+        elif p.suffix.lower() == ".pdf" and p.exists():
             files.append(p)
+        else:
+            print(f"  [warn] not a PDF or missing: {p}")
+    return files
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Merge PDFs into one bookmarked file.")
+    ap.add_argument("inputs", nargs="+", help="a directory of PDFs, or PDF files")
+    ap.add_argument("-o", "--out", required=True, help="output path (bare name → LaCie library)")
+    ap.add_argument("--title", help="document title metadata")
+    args = ap.parse_args()
+
+    files = collect(args.inputs)
     if not files:
-        sys.exit("no PDF inputs found")
+        print("error: no PDF inputs found", file=sys.stderr)
+        return 2
 
     out = Path(args.out)
     if not out.is_absolute() and out.parent == Path("."):
@@ -51,13 +79,11 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
 
     writer = PdfWriter()
-    page_cursor = 0
-    added = 0
+    page_cursor = added = 0
     for f in files:
-        try:
-            reader = PdfReader(str(f))
-        except Exception as e:
-            print(f"  [skip] {f.name}: {e}"); continue
+        reader = open_reader(f)
+        if reader is None:
+            continue
         n = len(reader.pages)
         for pg in reader.pages:
             writer.add_page(pg)
@@ -66,13 +92,20 @@ def main():
         added += 1
         print(f"  + {f.name:<48} {n:>4} pages  → bookmark '{label(f)}'")
 
+    if added == 0:
+        print("error: no usable PDFs (all skipped)", file=sys.stderr)
+        return 2
+
     if args.title:
         writer.add_metadata({"/Title": args.title})
-    with open(out, "wb") as fh:
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    with open(tmp, "wb") as fh:
         writer.write(fh)
+    tmp.replace(out)            # atomic: never leave a half-written target
     print(f"\n[OK] merged {added} part(s), {page_cursor} pages → {out} "
-          f"({out.stat().st_size//1024} KB)")
+          f"({out.stat().st_size // 1024} KB)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,0 +1,4 @@
+# Runtime deps for the ebook tools (bin/) and tests/.
+# Install into a venv:  python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+pypdf==6.13.3
+httpx==0.28.1

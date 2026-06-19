@@ -8,6 +8,23 @@
 
 Operational artifacts for the cerebro-* local model fleet (NVIDIA DGX Spark / GB10).
 
+## Layout
+```
+modelfiles/   guardrail SYSTEM clause for all 6 roles (master, scientist, investor,
+              coder, analyst, creative) — applied via `FROM <name>:latest`
+bin/          springer-fetch, pdf-merge   (lawful ebook tools)
+tests/        verify_boundary.py (live probe) · test_judge.py · test_pdf_merge.py
+deploy.sh     idempotent: apply every guardrail Modelfile
+.github/      CI: cloud unit/integration tests + self-hosted live probe
+```
+
+## Quick start
+```bash
+python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+./deploy.sh                  # apply the guardrail to the whole fleet (no retrain)
+python3 tests/verify_boundary.py   # live regression probe (needs Ollama + models)
+```
+
 ## Principle
 **A guardrail must block only the genuinely-prohibited act and never impede legitimate
 ability, functionality, or progress.** The DRM guardrail here refuses *circumventing*
@@ -16,15 +33,16 @@ fabricating "breaker" tools). It must NOT refuse lawful adjacent work: downloadi
 the user is entitled to, merging/archiving PDFs, or general coding.
 
 ## modelfiles/
-Ollama `SYSTEM`-layer guardrail baked into the trained models. Deploy with:
+Ollama `SYSTEM`-layer guardrail for **all six roles**. Deploy the whole fleet:
 ```bash
-ollama create cerebro-coder  -f modelfiles/cerebro-coder.Modelfile    # FROM <name>:latest
-ollama create cerebro-master -f modelfiles/cerebro-master.Modelfile
+./deploy.sh                      # all roles (idempotent)
+./deploy.sh cerebro-coder        # or a single role
 ```
-Note: `FROM cerebro-<role>:latest` (by name) — NOT the blob path, which is root-owned.
-The SYSTEM clause overrides inherited system; weights/template/params are inherited.
+Each Modelfile uses `FROM cerebro-<role>:latest` (by name — NOT the blob path, which is
+root-owned). The SYSTEM clause overrides the inherited system; weights/template/params are
+inherited, so there's **no retraining** — deploy is instant.
 Why SYSTEM-layer: LoRA on a 7B would not instill the refusal (1/10 adversarial even at
-43 boundary samples; model fabricated tools to comply). SYSTEM guardrail = 10/10 refuse,
+43 boundary samples; model fabricated tools to comply). SYSTEM guardrail = robust refusal,
 0 circumvention code. Real enforcement also lives in the tools (no decrypt binary exists).
 
 ## bin/

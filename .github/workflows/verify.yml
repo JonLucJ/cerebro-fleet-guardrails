@@ -14,11 +14,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install tool deps
+        run: pip install --quiet pypdf httpx
       - name: Byte-compile scripts
         run: |
-          python -m py_compile tests/verify_boundary.py tests/test_judge.py bin/pdf-merge bin/springer-fetch
+          python -m py_compile tests/*.py bin/pdf-merge bin/springer-fetch
+          bash -n deploy.sh
       - name: Unit-test judge logic (no models needed)
         run: python tests/test_judge.py
+      - name: Integration-test pdf-merge (no models needed)
+        run: python tests/test_pdf_merge.py
 
   live-verify:
     name: live 18-prompt probe (self-hosted Spark)
